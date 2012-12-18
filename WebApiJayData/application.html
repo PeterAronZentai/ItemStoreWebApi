@@ -2,8 +2,8 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <script src="Scripts/jquery-1.8.3.js"></script>
-    <script src="http://include.jaydata.org/jaydata.js"></script>
-    <script src="Scripts/WebApiProvider.js"></script>
+    <script src="Scripts/jaydata.js"></script>
+    <script src="Scripts/jaydataproviders/WebApiProvider.js"></script>
     <script>
         //use $data here!
     </script>
@@ -12,20 +12,8 @@
             Task: String,
             DueDate: Date,
             Completed: Boolean
-        });
-        
-        var TodoDB = $data.EntityContext.extend("TodoDB", {
-            Todos: { type: $data.EntitySet, elementType: Todo }
-        });
-
-
-
-        Todo.storeToken = {
-            factory: function () {
-                return new TodoDB({ name: "webApi", apiUrl: "/api" })
-            }
-        };
-
+        })
+        .setStore('remote', { name: 'webApi', dataSource: '/api/Todos'});
 
         Todo.readAll().then($data.debug);
 

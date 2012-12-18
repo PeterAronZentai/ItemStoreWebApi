@@ -11,7 +11,6 @@
 //     Zoltán Gyebrovszki
 //
 // More info: http://jaydata.org
-
 $C('$data.Expressions.ExpressionWalker', $data.Expressions.EntityExpressionVisitor, null, {
     constructor: function (monitorDefinition) {
         this.Visit = function (expression, context) {
@@ -84,7 +83,7 @@ $data.Expressions.ExpressionNode.prototype.dig = function (predicate) {
     return result;
 }
 
-$C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
+$C('$data.storageProviders.webApi.webApiProvider', $data.StorageProviderBase, null,
 {
     constructor: function (cfg, ctx) {
         this.context = ctx;
@@ -218,7 +217,8 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                 }
             },
             error: function () {
-                callback.error(arguments);
+                console.dir(arguments);
+                callBack.error(arguments);
                 //callBack.error(errorThrow || new Exception('Request failed', 'RequestError', arguments));
             }
         };
@@ -258,28 +258,28 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                 request = {
                     url: this.providerConfiguration.apiUrl + '/',
                     headers: {},
-                    contentType:  "application/json",
+                    contentType: "application/json",
                     dataType: "json"
                 };
-                
+
                 //request.headers = { "Content-Id": convertedItem.length };
                 switch (independentBlocks[index][i].data.entityState) {
                     case $data.EntityState.Unchanged: continue; break;
                     case $data.EntityState.Added:
                         request.type = "POST";
-                        request.url += independentBlocks[index][i].entitySet.name;
+                        request.url += independentBlocks[index][i].entitySet.tableName;
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Modified:
-                        request.type  = "PUT";
-                        request.url += independentBlocks[index][i].entitySet.name;
+                        request.type = "PUT";
+                        request.url += independentBlocks[index][i].entitySet.tableName;
                         request.url += "/" + this.getEntityKeysValue(independentBlocks[index][i]);
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Deleted:
                         request.type = "DELETE";
-                        request.url += independentBlocks[index][i].entitySet.name;
+                        request.url += independentBlocks[index][i].entitySet.tableName;
                         request.url += "/" + this.getEntityKeysValue(independentBlocks[index][i]);
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         break;
@@ -382,19 +382,19 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                     case $data.EntityState.Unchanged: continue; break;
                     case $data.EntityState.Added:
                         request.method = "POST";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Modified:
                         request.method = "MERGE";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Deleted:
                         request.method = "DELETE";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         break;
@@ -420,10 +420,10 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                     if (result[i].statusCode > 200 && result[i].statusCode < 300) {
                         var item = convertedItem[i];
                         if (result[i].statusCode == 204) {
-                            if (result[i].headers.ETag || result[i].headers.Etag) {
+                            if (result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag) {
                                 var property = item.getType().memberDefinitions.getPublicMappedProperties().filter(function (memDef) { return memDef.concurrencyMode === $data.ConcurrencyMode.Fixed });
                                 if (property && property[0]) {
-                                    item[property[0].name] = result[i].headers.ETag || result[i].headers.Etag;
+                                    item[property[0].name] = result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag;
                                 }
                             }
                             continue;
@@ -433,7 +433,7 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                             //TODO: is this correct?
                             if (memDef.computed || memDef.key) {
                                 if (memDef.concurrencyMode === $data.ConcurrencyMode.Fixed) {
-                                    item[memDef.name] = result[i].headers.ETag || result[i].headers.Etag;
+                                    item[memDef.name] = result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag;
                                 } else {
                                     var converter = that.fieldConverter.fromDb[Container.resolveType(memDef.type)];
                                     item[memDef.name] = converter ? converter(result[i].data[memDef.name]) : result[i].data[memDef.name];
@@ -446,7 +446,7 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                     }
                 }
                 if (errors.length > 0) {
-                    callBack.error(new Exception('See inner exceptions','Batch failed', errors));
+                    callBack.error(new Exception('See inner exceptions', 'Batch failed', errors));
                 } else if (callBack.success) {
                     callBack.success(convertedItem.length);
                 }
@@ -475,11 +475,11 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                 memdef.kind == $data.MemberTypes.complexProperty ||
 
                 (memdef.kind == $data.MemberTypes.property && !memdef.notMapped)) {
-                    //if (typeof memdef.concurrencyMode === 'undefined' &&
-                    //    (memdef.key === true || item.data.entityState === $data.EntityState.Added ||
-                    //    item.data.changedProperties.some(function (def) { return def.name === memdef.name; }))
-                    //)
-                    serializableObject[memdef.name] = item.physicalData[memdef.name];
+                //if (typeof memdef.concurrencyMode === 'undefined' &&
+                //    (memdef.key === true || item.data.entityState === $data.EntityState.Added ||
+                //    item.data.changedProperties.some(function (def) { return def.name === memdef.name; }))
+                //)
+                serializableObject[memdef.name] = item.physicalData[memdef.name];
             }
         }, this);
         return serializableObject;
@@ -715,7 +715,7 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                     return geo;
                 },
                 '$data.Guid': function (guid) { return guid ? ("guid'" + guid.value + "'") : guid; }
-}
+            }
         }
     },
     getEntityKeysValue: function (entity) {
@@ -730,7 +730,7 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
                 switch (Container.getName(field.dataType)) {
                     case "$data.Guid":
                     case "Edm.Guid":
-                        keyValue = ("guid'" + (keyValue ? keyValue.value : keyValue)  + "'");
+                        keyValue = ("guid'" + (keyValue ? keyValue.value : keyValue) + "'");
                         break;
                     case "$data.Blob":
                     case "Edm.Binary":
@@ -816,7 +816,7 @@ $C('$data.storageProviders.WebApiProvider', $data.StorageProviderBase, null,
     }
 }, null);
 
-$data.StorageProviderBase.registerProvider("webApi", $data.storageProviders.WebApiProvider);
+$data.StorageProviderBase.registerProvider("webApi", $data.storageProviders.webApi.webApiProvider);
 
 $C('$data.storageProviders.webApi.webApiCompiler', $data.Expressions.EntityExpressionVisitor, null, {
     constructor: function () {
@@ -833,7 +833,7 @@ $C('$data.storageProviders.webApi.webApiCompiler', $data.Expressions.EntityExpre
         this.mainEntitySet = query.context.getEntitySetFromElementType(query.defaultType);
 
         var queryFragments = { urlText: "" };
-        
+
         this.Visit(query.expression, queryFragments);
 
         query.modelBinderConfig = {};
@@ -847,15 +847,15 @@ $C('$data.storageProviders.webApi.webApiCompiler', $data.Expressions.EntityExpre
             if (name != "urlText" && name != "actionPack" && name != "data" && name != "lambda" && name != "method" && queryFragments[name] != "") {
                 if (addAmp) { queryText += "&"; } else { queryText += "?"; }
                 addAmp = true;
-                if(name != "$urlParams"){
+                if (name != "$urlParams") {
                     queryText += name + '=' + queryFragments[name];
-                }else{
+                } else {
                     queryText += queryFragments[name];
                 }
             }
         }
         query.queryText = queryText;
-        
+
         return {
             queryText: queryText,
             method: queryFragments.method || 'GET',
@@ -953,25 +953,25 @@ $C('$data.storageProviders.webApi.webApiCompiler', $data.Expressions.EntityExpre
         }
         context['$urlParams'] += expression.name + '=' + value;
     },
-//    VisitConstantExpression: function (expression, context) {
-//        if (context['$urlParams']) { context['$urlParams'] += '&'; } else { context['$urlParams'] = ''; }
-//
-//
-//        var valueType = Container.getTypeName(expression.value);
-//
-//
-//
-//        context['$urlParams'] += expression.name + '=' + this.provider.fieldConverter.toDb[Container.resolveName(Container.resolveType(valueType))](expression.value);
-//    },
+    //    VisitConstantExpression: function (expression, context) {
+    //        if (context['$urlParams']) { context['$urlParams'] += '&'; } else { context['$urlParams'] = ''; }
+    //
+    //
+    //        var valueType = Container.getTypeName(expression.value);
+    //
+    //
+    //
+    //        context['$urlParams'] += expression.name + '=' + this.provider.fieldConverter.toDb[Container.resolveName(Container.resolveType(valueType))](expression.value);
+    //    },
 
 
     VisitCountExpression: function (expression, context) {
         this.Visit(expression.source, context);
-        context.urlText += '/$count';       
+        context.urlText += '/$count';
     }
 }, {});
 
-$C('$data.storageProviders.oData.oDataWhereCompiler', $data.Expressions.EntityExpressionVisitor, null, {
+$C('$data.storageProviders.webApi.webApiWhereCompiler', $data.Expressions.EntityExpressionVisitor, null, {
     constructor: function (provider, lambdaPrefix) {
         this.provider = provider;
         this.lambdaPrefix = lambdaPrefix;
@@ -1132,7 +1132,7 @@ $C('$data.storageProviders.oData.oDataWhereCompiler', $data.Expressions.EntityEx
                 var preparator = Container.createQueryExpressionCreator(arg.value.entityContext);
                 var prep_expression = preparator.Visit(frameExpression);
 
-                var compiler = new $data.storageProviders.oData.oDataWhereCompiler(this.provider, true);
+                var compiler = new $data.storageProviders.webApi.webApiWhereCompiler(this.provider, true);
                 var frameContext = { data: "" };
                 var compiled = compiler.compile(prep_expression, frameContext);
 
@@ -1143,7 +1143,7 @@ $C('$data.storageProviders.oData.oDataWhereCompiler', $data.Expressions.EntityEx
     }
 });
 
-$C('$data.storageProviders.oData.oDataOrderCompiler', $data.storageProviders.oData.oDataWhereCompiler, null, {
+$C('$data.storageProviders.webApi.webApiOrderCompiler', $data.storageProviders.webApi.webApiWhereCompiler, null, {
     constructor: function (provider) {
         this.provider = provider;
     },
@@ -1187,7 +1187,7 @@ $C('$data.storageProviders.oData.oDataOrderCompiler', $data.storageProviders.oDa
         context.data += expression.memberName;
     }
 });
-$C('$data.storageProviders.oData.oDataPagingCompiler', $data.Expressions.EntityExpressionVisitor, null, {
+$C('$data.storageProviders.webApi.webApiPagingCompiler', $data.Expressions.EntityExpressionVisitor, null, {
     constructor: function (provider) {
         this.provider = provider;
     },
@@ -1208,7 +1208,7 @@ $C('$data.storageProviders.oData.oDataPagingCompiler', $data.Expressions.EntityE
         context.data += expression.value;
     }
 });
-$C('$data.storageProviders.oData.oDataProjectionCompiler', $data.Expressions.EntityExpressionVisitor, null, {
+$C('$data.storageProviders.webApi.webApiProjectionCompiler', $data.Expressions.EntityExpressionVisitor, null, {
     constructor: function (entityContext) {
         this.entityContext = entityContext;
         this.hasObjectLiteral = false;
@@ -1288,7 +1288,7 @@ $C('$data.storageProviders.oData.oDataProjectionCompiler', $data.Expressions.Ent
         this.Visit(expression.source, context);
         this.Visit(expression.selector, context);
     },
-    
+
     VisitEntityFieldExpression: function (expression, context) {
         this.Visit(expression.source, context);
         this.Visit(expression.selector, context);
@@ -1325,6 +1325,6 @@ $C('$data.storageProviders.oData.oDataProjectionCompiler', $data.Expressions.Ent
     VisitConstantExpression: function (expression, context) {
         //Guard.raise(new Exception('Constant value is not supported in Projection.', 'Not supported!'));
         //context.data += expression.value;
-		context.data = context.data.slice(0, context.data.length - 1);
+        context.data = context.data.slice(0, context.data.length - 1);
     }
 });

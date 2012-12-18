@@ -328,6 +328,8 @@
     <Content Include="Scripts\jaydataproviders\SqLiteProvider.min.js" />
     <Content Include="Scripts\jaydataproviders\StormProvider.js" />
     <Content Include="Scripts\jaydataproviders\StormProvider.min.js" />
+    <Content Include="Scripts\jaydataproviders\WebApiProvider.js" />
+    <Content Include="Scripts\jaydataproviders\WebApiProvider.min.js" />
     <Content Include="Scripts\jaydataproviders\YQLProvider.js" />
     <Content Include="Scripts\jaydataproviders\YQLProvider.min.js" />
     <Content Include="Scripts\jquery-1.8.3.js" />

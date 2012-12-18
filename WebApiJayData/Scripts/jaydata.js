@@ -7671,7 +7671,8 @@ JAYLINT = (function () {
             this.addProperty(holder, memberDefinition.name, pd, propagation);
 
             //if lazyload TODO
-            if (!memberDefinition.classMember && classFunction.__setPropertyfunctions == true) {
+            if (!memberDefinition.classMember && classFunction.__setPropertyfunctions == true && 
+                !('get_' + memberDefinition.name in holder || 'set_' + memberDefinition.name in holder)) {
                 var pdGetMethod = memberDefinition.createGetMethod();
                 this.addProperty(holder, 'get_' + memberDefinition.name, pdGetMethod, propagation);
 
@@ -7833,6 +7834,7 @@ JAYLINT = (function () {
                 t.apply(inst, parameters);
                 return inst;
             };
+            this.createInstance = function (type, parameters) { return IoC(type, parameters); };
 
             this.mapType = function (aliasTypeOrName, realTypeOrName) {
                 Guard.requireValue("aliasType", aliasTypeOrName);
@@ -8062,20 +8064,24 @@ JAYLINT = (function () {
 
     global["$C"] = function () { Class.define.apply(Class, arguments); };
 
+
+    var storeProperty = function (memberDefinition, value) {
+        var backingFieldName = "_" + memberDefinition.name;
+        if (!this[backingFieldName]) {
+            Object.defineProperty(this, backingFieldName, memberDefinition.createStorePropertyDescriptor(value));
+        }
+        else {
+            this[backingFieldName] = value;
+        }
+    };
+    var retrieveProperty = function (memberDefinition) {
+        var backingFieldName = "_" + memberDefinition.name;
+        return this[backingFieldName];
+    };
+
     $data.Class.define('$data.Base', function Base() { }, null, {
-        storeProperty: function (memberDefinition, value) {
-            var backingFieldName = "_" + memberDefinition.name;
-            if (!this[backingFieldName]) {
-                Object.defineProperty(this, backingFieldName, memberDefinition.createStorePropertyDescriptor(value));
-            }
-            else {
-                this[backingFieldName] = value;
-            }
-        },
-        retrieveProperty: function (memberDefinition) {
-            var backingFieldName = "_" + memberDefinition.name;
-            return this[backingFieldName];
-        },
+        storeProperty: storeProperty,
+        retrieveProperty: retrieveProperty,
         setProperty: function (memberDefinition, value, callback) {
             this[memberDefinition.name] = value;
             callback();
@@ -8084,6 +8090,7 @@ JAYLINT = (function () {
             callback.apply(this, [this[memberDefinition.name]]);
         }
     }, {
+        create: function () { return Container.createInstance(this, arguments); },
         extend: function (name, instanceDefinition, classDefinition) {
             return $data.Class.define(name, this, null, instanceDefinition, classDefinition);
         },
@@ -8116,15 +8123,31 @@ JAYLINT = (function () {
 
             return this;
         },
-        addMember: function (name, definition) {
+        addMember: function (name, definition, isClassMember) {
             var memberDefinition = new MemberDefinition(definition, this);
             memberDefinition.name = name;
-            $data.Class.buildMember(this, memberDefinition);
 
-            this.memberDefinitions.clearCache();
-
+            if (isClassMember) {
+                memberDefinition.classMember = true;
+                $data.Class.buildMember(this, memberDefinition, undefined, 'staticDefinitions');
+                this.staticDefinitions.clearCache();
+            } else {
+                $data.Class.buildMember(this, memberDefinition);
+                this.memberDefinitions.clearCache();
+            }
             return this;
-        }
+        },
+        describeField: function (name, definition) {
+            var memDef = this.memberDefinitions.getMember(name);
+            if (!memDef) {
+                this.addMember(name, definition);
+            } else {
+                Guard.raise(new Exception("Field '" + name + "' already defined!", "Invalid operation"));
+            }
+            return this;
+        },
+        storeProperty: storeProperty,
+        retrieveProperty: retrieveProperty
     });
 
     $data.Class.ConstructorParameter = ConstructorParameter = $data.Class.define('ConstructorParameter', null, null, {
@@ -8648,6 +8671,7 @@ $data.Class.define("$data.Expressions.ExpressionType", null, null, {}, {
     Filter: "Filter",
     First: "First",
     Count: "Count",
+    InlineCount: "InlineCount",
     Single: "Single",
     Some: "Some",
     Every: "Every",
@@ -11224,6 +11248,15 @@ $C('$data.Expressions.EntityExpression', $data.Expressions.ExpressionNode, null,
         return expression;
     },
 
+    VisitInlineCountExpression: function (expression, context) {
+        var source = this.Visit(expression.source, context);
+        var selector = this.Visit(expression.selector, context);
+        if (source !== expression.source || selector !== expression.selector) {
+            return Container.createInlineCountExpression(source, selector, expression.params, expression.instance);
+        }
+        return expression;
+    },
+
     VisitFilterExpression: function (expression, context) {
         var source = this.Visit(expression.source, context);
         var selector = this.Visit(expression.selector, context);
@@ -11348,7 +11381,9 @@ $C('$data.Expressions.EntityFieldOperationExpression', $data.Expressions.Express
                 this.storageModel = this.source.storageModel;
                 break;
             default:
-                Guard.raise("Unknown source type for EntitySetExpression: " + this.source.getType().name);
+                Guard.raise("take and skip must be the last expressions in the chain!");
+                //Guard.raise("Unknown source type for EntitySetExpression: " + this.getType().name);
+                break;
         }
 
         // suspicious code
@@ -11383,6 +11418,12 @@ $C('$data.Expressions.FilterExpression', $data.Expressions.EntitySetExpression, 
         this.resultType = $data.Array;
     },
     nodeType: { value: $data.Expressions.ExpressionType.Filter, enumerable: true }
+});
+
+$C('$data.Expressions.InlineCountExpression', $data.Expressions.EntitySetExpression, null, {
+    constructor: function (source, selector) {
+    },
+    nodeType: { value: $data.Expressions.ExpressionType.InlineCount, enumerable: true }
 });
 
 $C('$data.Expressions.FrameOperator', $data.Expressions.ExpressionNode, null, {
@@ -11585,6 +11626,17 @@ $C('$data.Expressions.QueryExpressionCreator', $data.Expressions.EntityExpressio
         var selector = this.Visit(expression.selector, context);
         if (source !== expression.source || selector !== expression.selector) {
             return Container.createFilterExpression(source, selector, expression.params, expression.instance);
+        }
+        return expression;
+    },
+
+    VisitInlineCountExpression: function (expression, context) {
+        var source = this.Visit(expression.source, context);
+        context = context || {};
+        context.frameType = expression.getType();
+        var selector = this.Visit(expression.selector, context);
+        if (source !== expression.source || selector !== expression.selector) {
+            return Container.createInlineCountExpression(source, selector, expression.params, expression.instance);
         }
         return expression;
     },
@@ -12215,7 +12267,7 @@ $data.Entity = Entity = $data.Class.define("$data.Entity", null, null, {
                         else if (type === $data.Geography && typeof initData[i] === 'object' && !(initData[i] instanceof $data.Geography))
                             this.initData[i] = new $data.Geography(initData[i]);
                         else if (type === $data.Guid && !(initData[i] instanceof $data.Guid))
-                            this.initData[i] = $data.parseGuid(initData[i]);
+                            this.initData[i] = initData[i] ? $data.parseGuid(initData[i]) : undefined;
                         else {
                             this.initData[i] = initData[i];
                         }
@@ -12357,27 +12409,33 @@ $data.Entity = Entity = $data.Class.define("$data.Entity", null, null, {
     },
     typeConversion: function (memberDefinition, value) {
         var convertedValue = value;
+        
         if (typeof value === 'string' && !memberDefinition.concurrencyMode) {
             switch (Container.resolveName(memberDefinition.type)) {
                 case '$data.Guid':
+                    if (value === '') return undefined;
                     convertedValue = $data.parseGuid(value);
                     break;
                 case '$data.Integer':
+                    if (value === '') return undefined;
                     convertedValue = parseInt(value);
                     if (isNaN(convertedValue))
                         throw Guard.raise(new Exception('TypeError: ', 'value not convertable to $data.Integer', [memberDefinition, value]));
                     break;
                 case '$data.Number':
+                    if (value === '') return undefined;
                     convertedValue = parseFloat(value);
                     if (isNaN(convertedValue))
                         throw Guard.raise(new Exception('TypeError: ', 'value not convertable to $data.Number', [memberDefinition, value]));
                     break;
                 case '$data.Date':
+                    if (value === '') return undefined;
                     convertedValue = new Date(value);
                     if (isNaN(convertedValue.valueOf()))
                         throw Guard.raise(new Exception('TypeError: ', 'value not convertable to $data.Date', [memberDefinition, value]));
                     break;
                 case '$data.Boolean':
+                    if (value === '') return undefined;
                     switch (value.toLowerCase()) {
                         case 'true': 
                             convertedValue = true;
@@ -12390,11 +12448,14 @@ $data.Entity = Entity = $data.Class.define("$data.Entity", null, null, {
                     }
                     break;
                 case '$data.Object':
+                    if (value === '') return undefined;
                     try {
                         convertedValue = JSON.parse(value);
                     } catch (e) {
                         throw Guard.raise(new Exception('TypeError: ', e.toString(), [memberDefinition, value]));
                     }
+                    break;
+                default:
                     break;
             }
         }
@@ -12685,15 +12746,8 @@ $data.Class.define('$data.EntityContext', null, null,
         /// <description>Provides facilities for querying and working with entity data as objects.</description>
         ///<param name="storageProviderCfg" type="Object">Storage provider specific configuration object.</param>
 
-        var self = this;
-        var args = JSON.parse(JSON.stringify(storageProviderCfg));
-        this.storeToken = {
-            typeName: this.getType().fullName,
-            args: args,
-            factory: function () {
-                return new (self.getType())(args);
-            }
-        }
+        if ($data.ItemStore && 'ContextRegister' in $data.ItemStore)
+            $data.ItemStore.ContextRegister.apply(this, arguments);
 
 
         if ("string" === typeof storageProviderCfg) {
@@ -13290,6 +13344,9 @@ $data.Class.define('$data.EntityContext', null, null,
 
                 successResult = query.result[0];
             } else {
+                if (typeof query.__count === 'number')
+                    query.result.totalCount = query.__count;
+
                 successResult = query.result;
             }
             
@@ -14288,10 +14345,18 @@ $data.Class.define('$data.QueryProvider', null, null,
 
     constructor: function(context){
         this.context = context;
+        this.providerName = null;
+        if (this.context.storageProvider && typeof this.context.storageProvider.getType === 'function'){
+            for (var i in $data.RegisteredStorageProviders){
+                if ($data.RegisteredStorageProviders[i] === this.context.storageProvider.getType()){
+                    this.providerName = i;
+                }
+            }
+        }
         this.cache = {};
     },
 
-    deepExtend: function(o, r){
+    _deepExtend: function(o, r){
         if (o === null || o === undefined){
             o = r;
             return;
@@ -14305,11 +14370,91 @@ $data.Class.define('$data.QueryProvider', null, null,
                                 o[i].push(r[i][j]);
                             }
                         }
-                    }else this.deepExtend(o[i], r[i]);
+                    }else this._deepExtend(o[i], r[i]);
                 }
             }else{
                 o[i] = r[i];
             }
+        }
+        if (o instanceof $data.Entity)
+            o.changedProperties = undefined;
+    },
+    
+    _dataSelector: function(metaSelector, data){
+        if (!metaSelector) return data;
+        
+        if (!(metaSelector instanceof Array)){
+            metaSelector = [metaSelector];
+        }
+
+        var i = 0;
+        var part;
+        while (i < metaSelector.length){
+            part = data;
+            var selector = metaSelector[i];
+            var type = selector.split(':');
+            switch (type[0]){
+                case 'json':
+                    var path = type[1].split('.');
+                    while (path.length) {
+                        if (typeof part[path[0]] === 'undefined') {
+                            if (i === metaSelector.length){
+                                return undefined;
+                            }else if (path.length){
+                                break;
+                            }
+                        }else{
+                            part = part[path[0]];
+                            path = path.slice(1);
+                            if (part === null) return part;
+                        }
+                    }
+                    if (!path.length){
+                        i = metaSelector.length;
+                    }
+                    break;
+                case 'css':
+                case 'xml':
+                    if (part.querySelector){
+                        part = part[meta.$item ? 'querySelectorAll' : 'querySelector'](type[1]);
+                    }else{
+                        part = $(part).find(type[1]);
+                        if (!meta.$item) part = part[0];
+                    }
+                    break;
+            }
+            i++;
+        }
+        
+        return part;
+    },
+    
+    _keyProcessor: function(type, keys, data){
+        var key = '';
+        
+        for (var i = 0; i < keys.length; i++){
+            var part = data;
+            var id = typeof keys[i] !== 'object' ? keys[i] : keys[i].$source;
+            if (keys[i].$selector){
+                part = this._dataSelector(keys[i].$selector, part);
+            }
+            if (part[id] === null) return null;
+            if (typeof part[id] === 'undefined') return undefined;
+            key += (type + '_' + id + '#' + part[id]);
+        }
+        
+        return key;
+    },
+    
+    _typeFactory: function(type, name, data){
+        var memDef = Container.resolveType(type).memberDefinitions.getMember(name);
+        var type = Container.resolveName(memDef.type);
+        //console.log(memDef, memDef.converter, this.providerName);
+        if (this.providerName && memDef && memDef.converter && memDef.converter[this.providerName] && typeof memDef.converter[this.providerName].fromDb == 'function'){
+            return memDef.converter[this.providerName].fromDb(data, memDef, this.context, type);
+        }else{
+            var converter = this.context.storageProvider.fieldConverter.fromDb[type];
+            return converter ? converter(data) : new (Container.resolveType(type.memberDefinitions.getMember(j).type))(data);
         }
     },
 
@@ -14321,54 +14466,10 @@ $data.Class.define('$data.QueryProvider', null, null,
         var result;
 
         if (meta.$selector){
-			var metaSelector = meta.$selector;
-			if (!(metaSelector instanceof Array)){
-				metaSelector = [metaSelector];
-			}
-
-			var i = 0;
-			var part;
-			while (i < metaSelector.length){
-				part = data;
-				var selector = metaSelector[i];
-				var type = selector.split(':');
-				switch (type[0]){
-					case 'json':
-						var path = type[1].split('.');
-						while (path.length) {
-						    if (typeof part[path[0]] === 'undefined') {
-								if (i === metaSelector.length){
-									return undefined;
-								}else if (path.length){
-									break;
-								}
-							}else{
-								part = part[path[0]];
-								path = path.slice(1);
-								if (part === null) return part;
-							}
-						}
-						if (!path.length){
-							i = metaSelector.length;
-						}
-						break;
-					case 'css':
-					case 'xml':
-						if (part.querySelector){
-							part = part[meta.$item ? 'querySelectorAll' : 'querySelector'](type[1]);
-						}else{
-							part = $(part).find(type[1]);
-							if (!meta.$item) part = part[0];
-						}
-						break;
-				}
-				i++;
-			}
-
-			data = part;
-			if (!data){
-				return data;
-			}
+            data = this._dataSelector(meta.$selector, data);
+            if (!data){
+                return data;
+            }
         }
         
         if (meta.$type) {
@@ -14393,9 +14494,9 @@ $data.Class.define('$data.QueryProvider', null, null,
             }
         }
 
-		if (meta.$value){
-			if (typeof meta.$value === 'function'){
-				result = meta.$value.call(this, meta, data);
+        if (meta.$value){
+            if (typeof meta.$value === 'function'){
+                result = meta.$value.call(this, meta, data);
             }else if (meta.$type){
                 var type = Container.resolveName(meta.$type);
                 var converter = this.context.storageProvider.fieldConverter.fromDb[type];
@@ -14407,14 +14508,16 @@ $data.Class.define('$data.QueryProvider', null, null,
                 var converter = this.context.storageProvider.fieldConverter.fromDb[type];
                 result = converter ? converter(data[meta.$source]) : new (Container.resolveType(meta.$type))(data[meta.$source]); //Container['create' + Container.resolveType(meta.$type).name](data[meta.$source]);
             }else result = (meta.$source.split(':')[0] == 'attr' && data.getAttribute) ? data.getAttribute(meta.$source.split(':')[1]) : (meta.$source == 'textContent' && !data[meta.$source] ? $(data).text() : data[meta.$source]);
-        } else if (meta.$item) {
+        }else if (meta.$item){
             var keycache;
             if (meta.$item.$keys) keycache = [];
             
             if (Array.isArray(data)) {
                 for (var i = 0; i < data.length; i++) {
                     var key = '';
-                    if (meta.$keys) for (var j = 0; j < meta.$keys.length; j++) { key += (meta.$type + '_' + meta.$keys[j] + '#' + data[i][meta.$keys[j]]); }
+                    if (meta.$keys){
+                        key = this._keyProcessor(meta.$type, meta.$keys, data[i]);
+                    }
                     var r = this.call(data[i], meta.$item);
                     if (key){
                         if (this.cache[key]){
@@ -14428,24 +14531,24 @@ $data.Class.define('$data.QueryProvider', null, null,
                         }
                     }else{
                         var key = '';
-                        if (meta.$item.$keys) for (var j = 0; j < meta.$item.$keys.length; j++) {
-                            if (typeof data[i][meta.$item.$keys[j]] === 'undefined'){
-                                key = undefined;
-                                break;
-                            }
-                            key += (meta.$type + '_' + meta.$item.$keys[j] + '#' + data[i][meta.$item.$keys[j]]);
+                        if (meta.$item.$keys){
+                            key = this._keyProcessor(meta.$type, meta.$item.$keys, data[i]);
                         }
-                        if (keycache && key){
-                            if (keycache.indexOf(key) < 0){
-                                result.push(r);
-                                keycache.push(key);
-                            }
-                        }else result.push(r);
+                        if (key !== null){
+                            if (keycache && key){
+                                if (keycache.indexOf(key) < 0){
+                                    result.push(r);
+                                    keycache.push(key);
+                                }
+                            }else result.push(r);
+                        }
                     }
                 }
             } else {
                 var key = '';
-                if (meta.$keys) for (var j = 0; j < meta.$keys.length; j++) { key += (meta.$type + '_' + meta.$keys[j] + '#' + data[meta.$keys[j]]); }
+                if (meta.$keys){
+                    key = this._keyProcessor(meta.$type, meta.$keys, data);
+                }
                 var r = this.call(data, meta.$item);
                 if (key){
                     if (this.cache[key]){
@@ -14459,63 +14562,83 @@ $data.Class.define('$data.QueryProvider', null, null,
                     }
                 }else{
                     var key = '';
-                    if (meta.$item.$keys) for (var j = 0; j < meta.$item.$keys.length; j++) {
-                        if (typeof data[meta.$item.$keys[j]] === 'undefined'){
-                            key = undefined;
-                            break;
-                        }
-                        key += (meta.$type + '_' + meta.$item.$keys[j] + '#' + data[meta.$item.$keys[j]]);
+                    if (meta.$item.$keys){
+                        key = this._keyProcessor(meta.$type, meta.$item.$keys, data);
                     }
-                    if (keycache && key){
-                        if (keycache.indexOf(key) < 0){
-                            result.push(r);
-                            keycache.push(key);
-                        }
-                    }else result.push(r);
+                    if (key !== null){
+                        if (keycache && key){
+                            if (keycache.indexOf(key) < 0){
+                                result.push(r);
+                                keycache.push(key);
+                            }
+                        }else result.push(r);
+                    }
                 }
             }
         }else{
             var key = '';
             if (meta.$keys){
-                for (var j = 0; j < meta.$keys.length; j++) { key += (meta.$type + '_' + meta.$keys[j] + '#' + data[meta.$keys[j]]); }
+                key = this._keyProcessor(meta.$type, meta.$keys, data);
                 if (!this.cache[key]){
+                    if (key === null) return null;
+                    this.cache[key] = result;
                     for (var j in meta){
                         if (j.indexOf('$') < 0){
                             if (!meta[j].$item) {
                                 if (meta[j].$type || meta[j].$source) { result[j] = this.call(data, meta[j]); }
                                 else if (meta.$type) {
-                                    var type = Container.resolveName(meta.$type.memberDefinitions.getMember(j).type);
-                                    var converter = this.context.storageProvider.fieldConverter.fromDb[type];
-                                    result[j] = converter ? converter(data[meta[j]]) : new (Container.resolveType(meta.$type.memberDefinitions.getMember(j).type))(data[meta[j]]); //Container['create' + Container.resolveType(meta.$type.memberDefinitions.getMember(j).type).name](data[meta[j]]);
+                                    result[j] = this._typeFactory(meta.$type, j, data[meta[j]]);
                                 } else { result[j] = meta[j].$source ? data[meta[j].$source] : data[meta[j]]; }
                             } else { result[j] = this.call(data, meta[j]); }
                         }
                     }
-                    this.cache[key] = result;
                 }else{
                     result = this.cache[key];
                     for (var j in meta){
                         if (j.indexOf('$') < 0){
                             if (meta[j].$item) {
-                                if (meta[j].$item.$keys){
-                                    var key = '';
-                                    for (var k = 0; k < meta[j].$item.$keys.length; k++) { key += (meta[j].$item.$type + '_' + meta[j].$item.$keys[k] + '#' + data[meta[j].$item.$keys[k]]); }
-                                    var r = this.call(data, meta[j].$item);
-                                    if (!this.cache[key]){
-                                        this.cache[key] = r;
-                                        result[j].push(r);
-                                    }else{
-                                        if (result[j].indexOf(this.cache[key]) < 0){
-                                            result[j].push(this.cache[key]);
+                                data = this._dataSelector(meta[j].$selector, data);
+                                if (Array.isArray(data)){
+                                    for (var i = 0; i < data.length; i++) {
+                                        if (meta[j].$item.$keys) {
+                                            var key = this._keyProcessor(meta[j].$item.$type, meta[j].$item.$keys, data[i]);
+                                            if (key !== null) {
+                                                var r = this.call(data[i], meta[j].$item);
+                                                if (!this.cache[key]) {
+                                                    this.cache[key] = r;
+                                                    result[j].push(r);
+                                                } else {
+                                                    if (result[j].indexOf(this.cache[key]) < 0) {
+                                                        result[j].push(this.cache[key]);
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            result[j].push(this.call(data[i], meta[j].$item));
                                         }
                                     }
                                 }else{
-                                    result[j].push(this.call(data, meta[j].$item));
+                                    if (meta[j].$item.$keys) {
+                                        var key = this._keyProcessor(meta[j].$item.$type, meta[j].$item.$keys, data);
+                                        if (key !== null) {
+                                            var r = this.call(data, meta[j].$item);
+                                            if (!this.cache[key]) {
+                                                this.cache[key] = r;
+                                                result[j].push(r);
+                                            } else {
+                                                if (result[j].indexOf(this.cache[key]) < 0) {
+                                                    result[j].push(this.cache[key]);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        result[j].push(this.call(data, meta[j].$item));
+                                    }
                                 }
                             }else{
                                 if (typeof meta[j] === 'object'){
                                     var r = this.call(data, meta[j]);
-                                    this.deepExtend(result[j], r);
+                                    this._deepExtend(result[j], r);
                                 }
                             }
                         }
@@ -14527,9 +14650,7 @@ $data.Class.define('$data.QueryProvider', null, null,
                         if (!meta[j].$item) {
                             if (meta[j].$type || meta[j].$source) { result[j] = this.call(data, meta[j]); }
                             else if (meta.$type) {
-                                var type = Container.resolveName(Container.resolveType(meta.$type).memberDefinitions.getMember(j).type);
-                                var converter = this.context.storageProvider.fieldConverter.fromDb[type];
-                                result[j] = converter ? converter(data[meta[j]]) : new (Container.resolveType(meta.$type.memberDefinitions.getMember(j).type))(data[meta[j]]); //Container['create' + Container.resolveType(meta.$type.memberDefinitions.getMember(j).type).name](data[meta[j]]);
+                                result[j] = this._typeFactory(meta.$type, j, data[meta[j]]);
                             } else { result[j] = meta[j].$source ? data[meta[j].$source] : data[meta[j]]; }
                         } else { result[j] = this.call(data, meta[j]); }
                     }
@@ -14538,8 +14659,8 @@ $data.Class.define('$data.QueryProvider', null, null,
         }
 
 
-		if (result instanceof $data.Entity)
-		    result.changedProperties = undefined;
+        if (result instanceof $data.Entity)
+            result.changedProperties = undefined;
         return result;
     }
 });
@@ -15282,6 +15403,14 @@ $data.Class.define('$data.Queryable', null, null,
         var takeExp = Container.createIncludeExpression(this.expression, constExp);
         return Container.createQueryable(this, takeExp);
     },
+
+    withInlineCount: function (selector) {
+        this._checkOperation('withInlineCount');
+        var constExp = Container.createConstantExpression(selector || 'allpages', "string");
+        var inlineCountExp = Container.createInlineCountExpression(this.expression, constExp);
+        return Container.createQueryable(this, inlineCountExp);
+    },
+
     removeAll: function (onResult) {
         ///	<summary>Delete the query result and returns the number of deleted entities in a query as the callback parameter.</summary>
         ///	<param name="onResult" type="Function">A callback function</param>
@@ -15420,8 +15549,6 @@ $data.Class.defineEx('$data.EntitySet',
         for (var i in eventHandlers){
             this[i] = eventHandlers[i];
         }
-
-        this.elementType.storeToken = this.elementType.storeToken || context.storeToken;
     },
 
 
@@ -15754,10 +15881,10 @@ $data.Class.defineEx('$data.EntitySet',
         return this.entityContext.loadItemProperty(entity, memberDefinition, callback);
     },
     saveChanges: function () {
-        this.entityContext.saveChanges.apply(this.entityContext, arguments);
+        return this.entityContext.saveChanges.apply(this.entityContext, arguments);
     },
     addProperty: function (name, getter, setter) {
-        this.elementType.addProperty.apply(this.elementType, arguments);
+        return this.elementType.addProperty.apply(this.elementType, arguments);
     },
     expression: {
         get: function () {
@@ -15823,7 +15950,7 @@ $data.EntityState = {
             if ('object' === typeof contextFactoryOrToken && 'factory' in contextFactoryOrToken) {
                 var type = Container.resolveType(contextFactoryOrToken.typeName);
 
-                self.itemStoreConfig.aliases[name] = contextFactoryOrToken;
+                self.itemStoreConfig.aliases[name] = contextFactoryOrToken.factory;
                 self.itemStoreConfig.contextTypes[name] = type;
                 if (isDefault) {
                     self.itemStoreConfig['default'] = name;
@@ -15880,27 +16007,25 @@ $data.EntityState = {
         }
     },
     _setStoreAlias: function (entity, storeToken) {
-        if ('object' === typeof storeToken)
+        if ('object' === typeof storeToken && !entity.storeToken)
             entity.storeToken = storeToken
         return entity;
     },
     _getStoreAlias: function (entity, storeAlias) {
+        var validStoreAlias = undefined;
+        if (typeof storeAlias === 'string') {
+            validStoreAlias = storeAlias;
+        }
+
         if (entity instanceof $data.Entity) {
-            return storeAlias || entity.storeToken || entity.getType().storeToken;
+            var type = entity.getType();
+            return validStoreAlias || entity.storeToken || (type.storeConfigs ? type.storeConfigs['default'] : undefined) || type.storeToken;
         } else {
-            return storeAlias || entity.storeToken;
+            return validStoreAlias || (entity.storeConfigs ? entity.storeConfigs['default'] : undefined) || entity.storeToken;
         }
     },
     _getStoreContext: function (aliasOrToken, type, nullIfInvalid) {
-        var contextPromise;
-
-        if (aliasOrToken && 'object' === typeof aliasOrToken && 'function' === typeof aliasOrToken.factory) {
-            contextPromise = aliasOrToken.factory(type);
-        } else if (aliasOrToken && 'string' === typeof aliasOrToken && this.itemStoreConfig.aliases[aliasOrToken]) {
-            contextPromise = this.itemStoreConfig.aliases[aliasOrToken](type);
-        } else {
-            contextPromise = this.itemStoreConfig.aliases[this.itemStoreConfig['default']](type);
-        }
+        var contextPromise = this._getContextPromise(aliasOrToken, type);
 
         if (!contextPromise || contextPromise instanceof $data.EntityContext) {
             var promise = new $data.PromiseHandler();
@@ -15920,8 +16045,25 @@ $data.EntityState = {
             }
         });
     },
-    _getStoreEntitySet: function (aliasOrToken, instanceOrType) {
-        aliasOrToken = this._getStoreAlias(instanceOrType, aliasOrToken);
+    _getContextPromise: function (aliasOrToken, type) {
+        if (aliasOrToken && 'object' === typeof aliasOrToken && 'function' === typeof aliasOrToken.factory) {
+            return aliasOrToken.factory(type);
+        } else if (aliasOrToken && 'object' === typeof aliasOrToken && 'object' === typeof aliasOrToken.args && 'string' === typeof aliasOrToken.typeName) {
+            var type = Container.resolveType(aliasOrToken.typeName);
+            return new type(JSON.parse(JSON.stringify(aliasOrToken.args)));
+        } else if (aliasOrToken && 'string' === typeof aliasOrToken && type.storeConfigs && type.storeConfigs.stores[aliasOrToken]) {
+            return this._getDefaultItemStoreFactory(type, type.storeConfigs.stores[aliasOrToken]);
+        } else if (aliasOrToken && 'string' === typeof aliasOrToken && this.itemStoreConfig.aliases[aliasOrToken]) {
+            return this.itemStoreConfig.aliases[aliasOrToken](type);
+        } else if (aliasOrToken && 'function' === typeof aliasOrToken) {
+            return aliasOrToken();
+        } else {
+            return this.itemStoreConfig.aliases[this.itemStoreConfig['default']](type);
+        }
+
+    },
+    _getStoreEntitySet: function (storeAlias, instanceOrType) {
+        var aliasOrToken = this._getStoreAlias(instanceOrType, storeAlias);
         var type = ("function" === typeof instanceOrType) ? instanceOrType : instanceOrType.getType();;
 
         return this._getStoreContext(aliasOrToken, type)
@@ -15935,19 +16077,28 @@ $data.EntityState = {
                 return entitySet;
             });
     },
-    _getDefaultItemStoreFactory: function (instanceOrType) {
+    _getDefaultItemStoreFactory: function (instanceOrType, storeConfig) {
         if (instanceOrType) {
             var type = ("function" === typeof instanceOrType) ? instanceOrType : instanceOrType.getType();
             var typeName = $data.Container.resolveName(type) + "_items";
-            var typeName = typeName.replace(".", "_");
+            var typeName = typeName.replace(/\./g, "_");
 
-            var provider = 'local';
+            var storeConfig = $data.typeSystem.extend({
+                collectionName: 'Items',
+                tableName: typeName,
+                initParam: { provider: 'local', databaseName: typeName }
+            }, storeConfig);
 
-            var inMemoryType = $data.EntityContext.extend(typeName, {
-                'Items': { type: $data.EntitySet, elementType: type }
-            });
+            if (storeConfig.tableName && !storeConfig.collectionName)
+                storeConfig.collectionName = storeConfig.tableName;
 
-            return new inMemoryType({ name: provider, databaseName: typeName });
+            var contextDef = {}
+            contextDef[storeConfig.collectionName] = { type: $data.EntitySet, elementType: type }
+            if (storeConfig.tableName)
+                contextDef[storeConfig.collectionName]['tableName'] = storeConfig.tableName;
+
+            var inMemoryType = $data.EntityContext.extend(typeName, contextDef);
+            return new inMemoryType(storeConfig.initParam);
         }
         return undefined;
     },
@@ -16013,7 +16164,7 @@ $data.EntityState = {
                         }
 
                         return entitySet.entityContext.saveChanges()
-                            .then(function () { return entity; });
+                            .then(function () { self._setStoreAlias(entity, entitySet.entityContext.storeToken); return entity; });
                     });
             });
     },
@@ -16059,6 +16210,8 @@ $data.EntityState = {
         type.itemCount = self.EntityTypeItemCount(type);
         type.query = self.EntityTypeQuery(type);
         type.takeFirst = self.EntityTypeTakeFirst(type);
+
+        type.setStore = self.EntityTypeSetStore(type);
     },
     EntityTypeReadAll: function (type) {
         return function (storeAlias) {
@@ -16175,6 +16328,62 @@ $data.EntityState = {
         }
     },
 
+    EntityTypeSetStore: function (type) {
+        return function (name, config) {
+            var self = $data.ItemStore;
+
+            var defStoreConfig = {};
+            if (config) {
+                if (config.tableName) {
+                    defStoreConfig.tableName = config.tableName;
+                    delete config.tableName;
+                }
+
+                if (config.collectionName) {
+                    defStoreConfig.collectionName = config.collectionName;
+                    delete config.collectionName;
+                }
+
+                if (typeof config.dataSource === 'string') {
+                    var ds = config.dataSource;
+                    if (ds.lastIndexOf('/') === ds.length - 1) {
+                        ds = ds.substring(0, ds.lastIndexOf('/'));
+                    }
+                    var parsedApiUrl = ds.substring(0, ds.lastIndexOf('/'));
+                    if (!defStoreConfig.tableName)
+                        defStoreConfig.tableName = ds.substring(ds.lastIndexOf('/') + 1);
+
+                    var provider = config.provider || config.name;
+                    switch (provider) {
+                        case 'oData':
+                            config.oDataServiceHost = config.oDataServiceHost || parsedApiUrl;
+                            break;
+                        case 'webApi':
+                            config.apiUrl = config.apiUrl || parsedApiUrl;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+
+            } else {
+                config = { name: 'local' };
+            }
+
+            if (!type.storeConfigs) {
+                type.storeConfigs = {
+                    stores: {},
+                    'default': name
+                };
+            }
+            type.storeConfigs.stores[name] = defStoreConfig;
+            type.storeConfigs.stores[name].initParam = config;
+
+            return type;
+        }
+    },
+
     _findByIdQueryable: function (set, keys) {
         var keysProps = set.defaultType.memberDefinitions.getKeyProperties();
         if (keysProps.length > 1 && keys && 'object' === typeof keys) {
@@ -16241,6 +16450,33 @@ $data.EntityState = {
     },
 
     //EntityContext
+    ContextRegister: function (storageProviderCfg) {
+        //context instance
+        var self = this;
+        var args = JSON.parse(JSON.stringify(storageProviderCfg));
+        this.storeToken = {
+            typeName: this.getType().fullName,
+            args: args,
+            factory: function () {
+                return new (self.getType())(args);
+            }
+        }
+
+        //set elementType storetoken
+        var members = this.getType().memberDefinitions.getPublicMappedProperties();
+        for (var i = 0; i < members.length; i++) {
+            var item = members[i];
+            if (item.type) {
+                var itemResolvedDataType = Container.resolveType(item.type);
+                if (itemResolvedDataType && itemResolvedDataType.isAssignableTo && itemResolvedDataType.isAssignableTo($data.EntitySet)) {
+                    var elementType = Container.resolveType(item.elementType);
+                    elementType.storeToken = elementType.storeToken || this.storeToken;
+                    elementType.assignedToContext = true;
+                }
+            }
+        }
+
+    },
     QueryResultModifier: function (query) {
         var self = $data.ItemStore;
         var context = query.context;
@@ -16260,8 +16496,55 @@ $data.EntityState = {
         }
     }
 });
-
 $data.ItemStore = new $data.ItemStoreClass();
+
+
+
+$data.Entity.addMember('field', function (propName) {
+    if (this.assignedToContext)
+        Guard.raise(new Exception("Type '" + this.fullName + "' already used in context!", 'Invalid Operation'));
+
+    var def = this.memberDefinitions.getMember(propName);
+    if (def) {
+        if (def.definedBy === this) {
+            return new $data.MemberWrapper(def);
+        } else {
+            Guard.raise(new Exception("Member '" + propName + "' defined on '" + def.definedBy.fullName + "'!", 'Invalid Operation'));
+        }
+    } else {
+        Guard.raise(new Exception("Member '" + propName + "' not exists!", 'Invalid Operation'));
+    }
+
+    return this;
+}, true);
+
+
+$data.Class.define('$data.MemberWrapper', null, null, {
+    constructor: function (memberDefinition) {
+        this.memberDefinition = memberDefinition;
+    },
+    setKey: function (value) {
+        this.memberDefinition.key = value || true;
+        return this;
+    },
+    setComputed: function (value) {
+        this.memberDefinition.computed = value || true;
+        return this;
+    },
+    setRequired: function (value) {
+        this.memberDefinition.required = value || true;
+        return this;
+    },
+    setNullable: function (value) {
+        this.memberDefinition.nullable = value || true;
+        return this;
+    },
+    changeDefinition: function (attr, value) {
+        this.memberDefinition[attr] = value;
+        return this;
+    }
+});
+
 Exception = function(message, name, data) {
     Error.call(this);
 	if (Error.captureStackTrace)
@@ -16363,6 +16646,7 @@ $data.Class.define('$data.StorageProviderLoaderBase', null, null, {
             'LocalStore': 'jaydata-inmemory',
             'mongoDB': 'jaydata-mongodb',
             'oData': 'jaydata-odata',
+            'webApi': 'jaydata-webapi',
             'sqLite': 'jaydata-sqlite',
             'webSql': 'jaydata-sqlite',
             'storm': 'jaydata-storm'
@@ -16374,6 +16658,7 @@ $data.Class.define('$data.StorageProviderLoaderBase', null, null, {
             'InMemory': 'InMemory',
             'LocalStore': 'InMemory',
             'oData': 'oData',
+            'webApi': 'WebApi',
             'sqLite': 'SqLite',
             'webSql': 'SqLite',
             'storm': 'Storm'

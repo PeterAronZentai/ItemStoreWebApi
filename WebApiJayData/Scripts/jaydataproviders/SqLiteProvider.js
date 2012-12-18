@@ -321,7 +321,14 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
             maxSize: 1024 * 1024,
             dbCreation: $data.storageProviders.DbCreationType.DropTableIfChanged
         }, cfg);
-
+        
+        this.providerName = '';
+        for (var i in $data.RegisteredStorageProviders){
+            if ($data.RegisteredStorageProviders[i] === this.getType()){
+                this.providerName = i;
+            }
+        }
+        
         if (this.context && this.context._buildDbType_generateConvertToFunction && this.buildDbType_generateConvertToFunction) {
             this.context._buildDbType_generateConvertToFunction = this.buildDbType_generateConvertToFunction;
         }
@@ -623,15 +630,16 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
                         var deleteCmd = [];
                         for (var i = 0; i < that.SqlCommands.length; i++) {
                             if (that.SqlCommands[i] == "") { continue; }
-                            var regEx = /^CREATE TABLE IF NOT EXISTS ([^ ]*) (\(.*\))/g;
+                            var regEx = new RegExp('^CREATE TABLE IF NOT EXISTS ([^ ]*) (\\(.*\\))', 'g');
                             var data = regEx.exec(that.SqlCommands[i]);
                             if (data) {
                                 var tableName = data[1];
                                 var tableDef = data[2];
                                 if (existObjectInDB[tableName.slice(1, tableName.length - 1)]) {
-                                    var existsRegEx = /^CREATE TABLE ([^ ]*) (\(.*\))/g;
-                                    var existTableDef = existsRegEx.exec(existObjectInDB[tableName.slice(1, tableName.length - 1)].sql)[2];
-                                    if (tableDef.toLowerCase() != existTableDef.toLowerCase()) {
+                                    var regex = new RegExp('\\(.*\\)', 'g');
+                                    var existsRegExMatches = existObjectInDB[tableName.slice(1, tableName.length - 1)].sql.match(regex);
+
+                                    if (!existsRegExMatches || tableDef.toLowerCase() != existsRegExMatches[0].toLowerCase()) {
                                         deleteCmd.push("DROP TABLE IF EXISTS [" + existObjectInDB[tableName.slice(1, tableName.length - 1)].tbl_name + "];");
                                     }
                                 }
@@ -822,7 +830,7 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
     },
     save_DeleteEntity: function (item) {
         ///DELETE FROM Posts WHERE Id=1;
-        var deleteSqlString = "DELETE FROM [" + item.entitySet.name + "] WHERE(";
+        var deleteSqlString = "DELETE FROM [" + item.entitySet.tableName + "] WHERE(";
         var hasCondition = false;
         var addAllField = false;
         var deleteParam = [];
@@ -834,7 +842,12 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
                 }
                 if (fieldDef.key || addAllField) {
                     deleteSqlString += "([" + fieldDef.name + "] == ?)";
-                    deleteParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.data[fieldDef.name]));
+                    var logicalFieldDef = item.data.getType().memberDefinitions.getMember(fieldDef.name);
+                    if (logicalFieldDef && logicalFieldDef.converter && logicalFieldDef.converter[this.providerName] && typeof logicalFieldDef.converter[this.providerName].toDb == 'function'){
+                        deleteParam.push(logicalFieldDef.converter[this.providerName].toDb(item.data[logicalFieldDef.name], logicalFieldDef, this.context, logicalFieldDef.dataType));
+                    }else{
+                        deleteParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.data[fieldDef.name]));
+                    }
                     hasCondition = true;
                 }
 
@@ -868,12 +881,22 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
                 }
                 if (fieldDef.key) {
                     whereSection += '([' + fieldDef.name + '] == ?)';
-                    whereParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldDef.name]));
+                    var logicalFieldDef = item.data.getType().memberDefinitions.getMember(fieldDef.name);
+                    if (logicalFieldDef && logicalFieldDef.converter && logicalFieldDef.converter[this.providerName] && typeof logicalFieldDef.converter[this.providerName].toDb == 'function'){
+                        whereParam.push(logicalFieldDef.converter[this.providerName].toDb(item.physicalData[logicalFieldDef.name], fieldDef, this.context, logicalFieldDef.dataType));
+                    }else{
+                        whereParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldDef.name]));
+                    }
                     hasCondition = true;
                 }
                 else {
                     setSection += "[" + fieldDef.name + "] = ?";
-                    setParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldDef.name]));
+                    var logicalFieldDef = item.data.getType().memberDefinitions.getMember(fieldDef.name);
+                    if (logicalFieldDef && logicalFieldDef.converter && logicalFieldDef.converter[this.providerName] && typeof logicalFieldDef.converter[this.providerName].toDb == 'function'){
+                        setParam.push(fieldDef.converter[this.providerName].toDb(item.physicalData[logicalFieldDef.name], logicalFieldDef, this.context, logicalFieldDef.dataType));
+                    }else{
+                        setParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldDef.name]));
+                    }
                 }
             }
         }, this);
@@ -898,7 +921,12 @@ $data.Class.define('$data.dbClient.DbCommand', null, null,
                 if (fieldDef.dataType && (!fieldDef.dataType.isAssignableTo || (fieldDef.dataType.isAssignableTo && !fieldDef.dataType.isAssignableTo($data.EntitySet)))) {
                     fieldValue += '?';
                     fieldList += "[" + fieldName + "]";
-                    fieldParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldName]));
+                    var logicalFieldDef = item.data.getType().memberDefinitions.getMember(fieldDef.name);
+                    if (logicalFieldDef && logicalFieldDef.converter && logicalFieldDef.converter[this.providerName] && typeof logicalFieldDef.converter[this.providerName].toDb == 'function'){
+                        fieldParam.push(logicalFieldDef.converter[this.providerName].toDb(item.physicalData[fieldName], logicalFieldDef, this.context, logicalFieldDef.dataType));
+                    }else{
+                        fieldParam.push(this.fieldConverter.toDb[Container.resolveName(fieldDef.dataType)](item.physicalData[fieldName]));
+                    }
                 }
             }
 

@@ -87,7 +87,7 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                         (association.FromMultiplicity == "0..1" && association.ToMultiplicity == "1") ||
                         (association.FromMultiplicity == '$$unbound')) {
                         var refValue = logicalEntity[association.FromPropertyName];
-                        if (refValue !== null && refValue !== undefined) {
+                        if (/*refValue !== null &&*/ refValue !== undefined) {
                             if (refValue instanceof $data.Array) {
                                 dbInstance[association.FromPropertyName] = dbInstance[association.FromPropertyName] || [];
                                 refValue.forEach(function (rv) {
@@ -95,8 +95,10 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                                     if (contentId < 0) { Guard.raise("Dependency graph error"); }
                                     dbInstance[association.FromPropertyName].push({ __metadata: { uri: "$" + (contentId + 1) } });
                                 }, this);
+                            } else if (refValue === null) {
+                                dbInstance[association.FromPropertyName] = null;
                             } else {
-                                if (refValue.entityState === $data.EntityState.Modified) {
+                                if (convertedItems.indexOf(refValue) < 0) {
                                     var sMod = context._storageModel.getStorageModel(refValue.getType())
                                     var tblName = sMod.TableName;
                                     var pk = '(' + context.storageProvider.getEntityKeysValue({ data: refValue, entitySet: sMod.EntitySetReference }) + ')';
@@ -150,6 +152,10 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 if (!data) data = JSON.parse(textStatus.body);
                 if (callBack.success) {
                     query.rawDataList = typeof data === 'string' ? [{ cnt: data }] : data;
+                    if (sql.withInlineCount && typeof data === 'object' && (data.__count || ('d' in data && data.d.__count))) {
+                        query.__count = new Number(data.__count || data.d.__count).valueOf();
+                    }
+
                     callBack.success(query);
                 }
             },
@@ -205,19 +211,19 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                     case $data.EntityState.Unchanged: continue; break;
                     case $data.EntityState.Added:
                         request.method = "POST";
-                        request.requestUri += independentBlocks[index][i].entitySet.name;
+                        request.requestUri += independentBlocks[index][i].entitySet.tableName;
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Modified:
                         request.method = "MERGE";
-                        request.requestUri += independentBlocks[index][i].entitySet.name;
+                        request.requestUri += independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Deleted:
                         request.method = "DELETE";
-                        request.requestUri += independentBlocks[index][i].entitySet.name;
+                        request.requestUri += independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         break;
@@ -232,20 +238,20 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
             if (response.statusCode > 200 && response.statusCode < 300) {
                 var item = convertedItem[0];
                 if (response.statusCode == 204) {
-                    if (response.headers.ETag || response.headers.Etag) {
+                    if (response.headers.ETag || response.headers.Etag || response.headers.etag) {
                         var property = item.getType().memberDefinitions.getPublicMappedProperties().filter(function (memDef) { return memDef.concurrencyMode === $data.ConcurrencyMode.Fixed });
                         if (property && property[0]) {
-                            item[property[0].name] = response.headers.ETag || response.headers.Etag;
+                            item[property[0].name] = response.headers.ETag || response.headers.Etag || response.headers.etag;
                         }
                     }
                 } else {
-
                     item.getType().memberDefinitions.getPublicMappedProperties().forEach(function (memDef) {
-                        if (memDef.computed || memDef.key) {
+                        var propType = Container.resolveType(memDef.type);
+                        if (memDef.computed || memDef.key || (!propType.isAssignableto && !memDef.inverseProperty)) {
                             if (memDef.concurrencyMode === $data.ConcurrencyMode.Fixed) {
-                                item[memDef.name] = response.headers.ETag || response.headers.Etag;
+                                item[memDef.name] = response.headers.ETag || response.headers.Etag || response.headers.etag;
                             } else {
-                                var converter = that.fieldConverter.fromDb[Container.resolveType(memDef.type)];
+                                var converter = that.fieldConverter.fromDb[Container.resolveName(memDef.type)];
                                 item[memDef.name] = converter ? converter(data[memDef.name]) : data[memDef.name];
                             }
                         }
@@ -284,19 +290,19 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                     case $data.EntityState.Unchanged: continue; break;
                     case $data.EntityState.Added:
                         request.method = "POST";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Modified:
                         request.method = "MERGE";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         request.data = this.save_getInitData(independentBlocks[index][i], convertedItem);
                         break;
                     case $data.EntityState.Deleted:
                         request.method = "DELETE";
-                        request.requestUri = independentBlocks[index][i].entitySet.name;
+                        request.requestUri = independentBlocks[index][i].entitySet.tableName;
                         request.requestUri += "(" + this.getEntityKeysValue(independentBlocks[index][i]) + ")";
                         this.save_addConcurrencyHeader(independentBlocks[index][i], request.headers);
                         break;
@@ -322,10 +328,10 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                     if (result[i].statusCode > 200 && result[i].statusCode < 300) {
                         var item = convertedItem[i];
                         if (result[i].statusCode == 204) {
-                            if (result[i].headers.ETag || result[i].headers.Etag) {
+                            if (result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag) {
                                 var property = item.getType().memberDefinitions.getPublicMappedProperties().filter(function (memDef) { return memDef.concurrencyMode === $data.ConcurrencyMode.Fixed });
                                 if (property && property[0]) {
-                                    item[property[0].name] = result[i].headers.ETag || result[i].headers.Etag;
+                                    item[property[0].name] = result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag;
                                 }
                             }
                             continue;
@@ -333,11 +339,12 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
 
                         item.getType().memberDefinitions.getPublicMappedProperties().forEach(function (memDef) {
                             //TODO: is this correct?
-                            if (memDef.computed || memDef.key) {
+                            var propType = Container.resolveType(memDef.type);
+                            if (memDef.computed || memDef.key || (!propType.isAssignableto && !memDef.inverseProperty)) {
                                 if (memDef.concurrencyMode === $data.ConcurrencyMode.Fixed) {
-                                    item[memDef.name] = result[i].headers.ETag || result[i].headers.Etag;
+                                    item[memDef.name] = result[i].headers.ETag || result[i].headers.Etag || result[i].headers.etag;
                                 } else {
-                                    var converter = that.fieldConverter.fromDb[Container.resolveType(memDef.type)];
+                                    var converter = that.fieldConverter.fromDb[Container.resolveName(memDef.type)];
                                     item[memDef.name] = converter ? converter(result[i].data[memDef.name]) : result[i].data[memDef.name];
                                 }
                             }
@@ -570,7 +577,8 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
             orderByDescending: {},
             first: {},
             include: {},
-            batchDelete: {}
+            batchDelete: {},
+            withInlineCount: {}
         },
         enumerable: true,
         writable: true
@@ -580,7 +588,7 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
             fromDb: {
                 '$data.Integer': function (number) { return (typeof number === 'string' && /^\d+$/.test(number)) ? parseInt(number) : number; },
                 '$data.Number': function (number) { return number; },
-                '$data.Date': function (dbData) { return dbData ? new Date(parseInt(dbData.substr(6))) : undefined; },
+                '$data.Date': function (dbData) { return dbData ? new Date(parseInt(dbData.substr(6))) : dbData; },
                 '$data.String': function (text) { return text; },
                 '$data.Boolean': function (bool) { return bool; },
                 '$data.Blob': function (blob) { return blob; },
@@ -788,6 +796,7 @@ $C('$data.storageProviders.oData.oDataCompiler', $data.Expressions.EntityExpress
         
         return {
             queryText: queryText,
+            withInlineCount: '$inlinecount' in queryFragments,
             method: queryFragments.method || 'GET',
             params: []
         };
@@ -846,6 +855,10 @@ $C('$data.storageProviders.oData.oDataCompiler', $data.Expressions.EntityExpress
         context["$filter"] = context.data;
         context.data = "";
 
+    },
+    VisitInlineCountExpression: function (expression, context) {
+        this.Visit(expression.source, context);
+        context["$inlinecount"] = expression.selector.value;
     },
     VisitEntitySetExpression: function (expression, context) {
         context.urlText += "/" + expression.instance.tableName;
